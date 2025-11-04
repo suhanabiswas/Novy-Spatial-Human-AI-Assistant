@@ -1,0 +1,34 @@
+{
+    "name": "VoiceRecordAction",
+    "maps": [
+        {
+            "name": "XRController",
+            "id": "79925d9b-92a4-48b5-a1ee-bf74f71a7b00",
+            "actions": [
+                {
+                    "name": "RecordButton",
+                    "type": "Button",
+                    "id": "3093dabd-c69d-4f2c-b751-e4369f6234d5",
+                    "expectedControlType": "",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": false
+                }
+            ],
+            "bindings": [
+                {
+                    "name": "",
+                    "id": "a66035b7-0d19-4d9d-9493-67d972e96f26",
+                    "path": "<XRController>{LeftHand}/{PrimaryButton}",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "RecordButton",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                }
+            ]
+        }
+    ],
+    "controlSchemes": []
+}

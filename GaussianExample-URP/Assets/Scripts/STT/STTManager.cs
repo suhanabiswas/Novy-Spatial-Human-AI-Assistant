@@ -1,0 +1,525 @@
+﻿using System.Collections;
+using UnityEngine;
+using TMPro;
+using UnityEngine.UI;
+using Whisper.Utils;
+using System.Linq;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+namespace Whisper.Samples
+{
+
+    public class BufferedCommand
+    {
+        public string command;
+        public string pointedObject;
+        public float[] pointedPosition;
+        public string pointedSurfaceObject;
+    }
+
+    public class STTManager : MonoBehaviour
+    {
+        public BufferedCommand pendingCommand = null;
+        bool isAwaitingConfirmation = false;
+        public bool isAwaitingChangeConfirmation = false;
+
+        public QueryInputHandler queryHandler;
+        public LLMResponseHandler responseHandler;
+
+        public WhisperManager manager;
+        public QueryInputHandler queryInputHandler;
+        public GameObject MainCamera;
+        public GameObject voiceCommandFeedbackWindow;
+
+        public TextMeshProUGUI recordInstructionText;
+        public Image backgroundPanel;
+
+        public AudioClip startBeep;
+        public AudioClip stopBeep;
+        public AudioClip successBeep;
+
+        public float silenceThreshold = 0.01f;
+        public float silenceDurationToStop = 5f;
+        //public float volumeCheckInterval = 0.1f;
+
+        private AudioClip recordedClip;
+        private AudioSource audioSource;
+        private bool isRecording = false;
+        private bool isProcessing = false;
+
+        private string selectedMic;
+        private string userQuery;
+        private float silenceTimer = 0f;
+        private int sampleRate = 16000;
+        private int recordDuration = 60;
+
+        private Queue<float> volumeSamples = new Queue<float>();
+        private int volumeSampleCount = 5; // Average over last 5 samples (~0.25s if interval=0.05s)
+        private float volumeCheckInterval = 0.05f; // faster checks for responsiveness
+
+        private Color listeningColor;
+        private Color processingColor;
+        private Color readyColor;
+        private Color errorColor;
+
+        private Vector3 velocity;
+        public float smoothTime = 0.3f; // Time to reach the target
+        public float maxSpeed = Mathf.Infinity; // Optional max speed
+
+        [SerializeField] private PointingEventLogger pointingLogger;
+
+        //public DashboardLLMConnection dashboardConnection;
+
+        private void Awake()
+        {
+            audioSource = gameObject.AddComponent<AudioSource>();
+
+            listeningColor = HexToColor("#475E2F");   
+            processingColor = HexToColor("#7A803E"); 
+            readyColor = HexToColor("#324863");       
+            errorColor = HexToColor("#633335");       
+
+            foreach (var device in Microphone.devices)
+            {
+                Debug.Log($"Available mic: {device}");
+                if (device.ToLower().Contains("oculus") || device.ToLower().Contains("headset"))
+                {
+                    selectedMic = device;
+                    Debug.Log($"Found VR Headset Mic: {selectedMic}");
+                    break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(selectedMic) && Microphone.devices.Length > 0)
+            {
+                selectedMic = Microphone.devices[0];
+                Debug.Log($"Using default mic: {selectedMic}");
+            }
+        }
+
+        private void Start()
+        {
+            StartCoroutine(VoiceLoop());
+        }
+
+        private void Update()
+        {
+            if (MainCamera != null && voiceCommandFeedbackWindow != null)
+            {
+                Vector3 cameraPosition = MainCamera.transform.position;
+                Transform camTransform = MainCamera.transform;
+
+                float distance = 1.5f;
+                Vector3 basePosition = cameraPosition + camTransform.forward * distance;
+                float verticalOffset = -0.6f;
+                float horizontalOffset = 0.4f;
+                Vector3 offset = (camTransform.up * verticalOffset) + (camTransform.right * horizontalOffset);
+                Vector3 targetPosition = basePosition + offset;
+
+                // Smoothly move voice feedback window
+                voiceCommandFeedbackWindow.transform.position = Vector3.SmoothDamp(
+                    voiceCommandFeedbackWindow.transform.position,
+                    targetPosition,
+                    ref velocity,
+                    smoothTime,
+                    maxSpeed,
+                    Time.deltaTime);
+
+                voiceCommandFeedbackWindow.transform.LookAt(camTransform.position);
+                voiceCommandFeedbackWindow.transform.Rotate(0, 180f, 0);
+
+            }
+        }
+
+        private IEnumerator VoiceLoop()
+        {
+            while (true)
+            {
+                if (!isRecording && !isProcessing)
+                {
+                    Debug.Log("Waiting for voice...");
+
+                    AudioClip tempClip = Microphone.Start(selectedMic, true, 1, sampleRate);
+                    yield return null;
+
+                    float waitTime = 0f;
+                    bool voiceDetected = false;
+
+                    volumeSamples.Clear();
+
+                    while (waitTime < 10f && !voiceDetected)
+                    {
+                        if (IsVoiceDetected(tempClip, silenceThreshold))
+                        {
+                            voiceDetected = true;
+                            Microphone.End(selectedMic);
+                            StartRecording();
+                            break;
+                        }
+
+                        waitTime += volumeCheckInterval;
+                        yield return new WaitForSeconds(volumeCheckInterval);
+                    }
+
+                    if (!voiceDetected)
+                    {
+                        Microphone.End(selectedMic);
+                        Debug.Log("No voice detected after waiting.");
+                        yield return new WaitForSeconds(1f); // avoid tight looping
+                        continue;
+                    }
+                }
+
+                if (isRecording)
+                {
+                    if (IsVoiceDetected(recordedClip, silenceThreshold))
+                    {
+                        silenceTimer = 0f;
+                    }
+                    else
+                    {
+                        silenceTimer += volumeCheckInterval;
+                        if (silenceTimer >= 1.5f) // increased silence duration to 1.5 seconds
+                        {
+                            StopRecording();
+                        }
+                    }
+                }
+
+                yield return new WaitForSeconds(volumeCheckInterval);
+            }
+        }
+
+        private bool IsVoiceDetected(AudioClip clip, float threshold)
+        {
+            float vol = GetSmoothedVolume(clip);
+            return vol > threshold;
+        }
+
+        private float GetSmoothedVolume(AudioClip clip)
+        {
+            float vol = GetMaxVolume(clip);
+
+            if (volumeSamples.Count >= volumeSampleCount)
+                volumeSamples.Dequeue();
+
+            volumeSamples.Enqueue(vol);
+
+            return volumeSamples.Average();
+        }
+
+        private void StartRecording()
+        {
+            if (isRecording || isProcessing) return;
+
+            recordedClip = Microphone.Start(selectedMic, true, recordDuration, sampleRate);
+            pointingLogger.StartRecordingTracking();
+            silenceTimer = 0f;
+            isRecording = true;
+
+            // Only show the 'Listening...' feedback if we're NOT waiting for confirmation
+            if (!isAwaitingConfirmation)
+            {
+                GiveFeedback("Ready for your command. Listening...", listeningColor, startBeep);
+            }
+
+            Debug.Log("Started recording");
+
+            if (queryHandler != null)
+                queryHandler.pointedTargetObject = null;
+            if (responseHandler != null)
+                responseHandler.pointedTargetObject = null;
+
+            queryHandler.pointedTargetPos = null;
+            responseHandler.pointedTargetPos = null;
+        }
+
+        private void StopRecording()
+        {
+            if (!isRecording) return;
+
+            int position = Microphone.GetPosition(selectedMic);
+            Microphone.End(selectedMic);
+            isRecording = false;
+           
+
+            var hoveredObjects = pointingLogger.ObjectLogs;
+            var hoveredSurfaces = pointingLogger.SurfaceLogs;
+
+            //recordInstructionText.text = "Checking audio...";
+            Debug.Log("Stopped recording");
+
+            if (position <= 0)
+            {
+                Debug.LogWarning("Recording too short — skipping processing.");
+                //recordInstructionText.text = "No sound detected. Try again.";
+                return;
+            }
+
+            float[] data = new float[position];
+            recordedClip.GetData(data, 0);
+
+            // Optional: check for silence
+            float maxVol = 0f;
+            foreach (var sample in data)
+                maxVol = Mathf.Max(maxVol, Mathf.Abs(sample));
+
+            if (maxVol < silenceThreshold)
+            {
+                Debug.LogWarning($"Audio too quiet (max volume = {maxVol}) — skipping transcription.");
+                //recordInstructionText.text = "Too quiet. Try again.";
+                return;
+            }
+
+            // Proceed with valid audio
+            AudioClip finalClip = AudioClip.Create("clip", position, recordedClip.channels, recordedClip.frequency, false);
+            finalClip.SetData(data, 0);
+
+            isProcessing = true;
+
+            StartCoroutine(ProcessClip(finalClip));
+        }
+
+
+        private IEnumerator ProcessClip(AudioClip clip)
+        {
+            //GiveFeedback("Stopped. Processing...", readyColor, successBeep);
+            pointingLogger.StopRecordingTracking();
+            var task = manager.GetTextAsync(clip);
+            yield return new WaitUntil(() => task.IsCompleted);
+
+            var res = task.Result;
+            if (res != null)
+            {
+                isAwaitingConfirmation = true;
+                string userQuery = res.Result?.Trim();
+                string loweredQuery = userQuery?.ToLowerInvariant();
+
+                if (!string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery))
+                {
+                    /*if (isAwaitingChangeConfirmation)
+                    {
+                        // If user says "confirm", make changes and upload new layout
+                        if (loweredQuery.Contains("confirm") || loweredQuery.Contains("confirmed") || loweredQuery.Contains("conform") || loweredQuery.Contains("form") || loweredQuery.Contains("firm") || loweredQuery.Contains("yes") || loweredQuery.Contains("good"))
+                        {
+                           responseHandler.OnUserConfirms();
+                           isAwaitingChangeConfirmation = false;
+                        }
+                        else
+                        {
+                            onNewBufferCommand(res, userQuery);
+                            isAwaitingChangeConfirmation = false;
+                        }
+
+                    }*/
+                    // If user says "send", submit the pending command
+                    if (((loweredQuery.Contains("send") ||loweredQuery.Contains("sent") || loweredQuery.Contains("yes") || loweredQuery.Contains("yes send") || loweredQuery.Contains("yes sent")) ||loweredQuery == "end" || loweredQuery == "and" || loweredQuery == "ant") && pendingCommand != null)
+                    {
+                        // Send buffered pointing data
+                        if (queryHandler != null)
+                        {
+                            queryHandler.pointedTargetObject = pendingCommand.pointedObject;
+                            queryHandler.pointedTargetPos = pendingCommand.pointedPosition;
+                            queryHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
+                        }
+                        if (responseHandler != null)
+                        {
+                            responseHandler.pointedTargetObject = pendingCommand.pointedObject;
+                            responseHandler.pointedTargetPos = pendingCommand.pointedPosition;
+                            responseHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
+                        }
+
+                        queryInputHandler.OnSubmit(pendingCommand.command);
+                        GiveFeedback($"Command sent and processing:\n\"{pendingCommand.command}\"", readyColor, successBeep);
+                        isAwaitingConfirmation = false;
+                        Debug.Log($"Sent with pointing data: {pendingCommand.command}");
+                        //dashboardConnection.LogToDashboard($"Command sent: {pendingCommand.command}");
+                        pendingCommand = null;
+                    }
+                    else
+                    {
+                        onNewBufferCommand(res, userQuery);
+                    }
+                }
+                else
+                {
+                    Debug.Log("Skipped invalid transcription.");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("Transcription failed.");
+            }
+
+            isProcessing = false;
+
+            // Wait 3 seconds before allowing next command
+            yield return new WaitForSeconds(3f);
+        }
+
+        private void onNewBufferCommand(WhisperResult res, string userQuery)
+        {
+            // buffer new command with pointing metadata
+            string pointedObject = null;
+            float[] pointedPosition = null;
+            string pointedSurfaceObject = null;
+
+            foreach (var segment in res.Segments)
+            {
+                if (segment.Tokens == null) continue;
+
+                foreach (var token in segment.Tokens)
+                {
+                    string word = token.Text.Trim().ToLowerInvariant();
+
+                    if ((word == "here" || word == "there" || word == "this" || word == "it" || word == "that") && token.Timestamp != null)
+                    {
+                        float tokenStart = (float)token.Timestamp.Start.TotalSeconds;
+                        float tokenEnd = (float)token.Timestamp.End.TotalSeconds;
+
+                        if (word == "this" || word == "it" || word == "that")
+                        {
+                            var candidateObjects = pointingLogger.ObjectLogs
+                                .Where(log => log.timestamp >= tokenStart && log.timestamp <= tokenEnd)
+                                .OrderByDescending(log => log.timestamp)
+                                .ToList();
+
+                            var closestObject = candidateObjects.FirstOrDefault();
+
+                            if (closestObject != null)
+                            {
+                                Debug.Log($"'{word}' at {tokenStart:F2}-{tokenEnd:F2}s likely refers to object: '{closestObject.objectName}'");
+                                pointingLogger.ShowOutline(closestObject.selectedObject, Color.green);
+                                pointedObject = closestObject.objectName;
+                            }
+                            else
+                            {
+                                Debug.LogWarning($"'{word}' at {tokenStart:F2}-{tokenEnd:F2}s: No object log match.");
+                            }
+                        }
+
+                        if (word == "here" || word == "there" || word == "this")
+                        {
+                            var candidateSurfaces = pointingLogger.SurfaceLogs
+                                .Where(log => log.timestamp >= tokenStart && log.timestamp <= tokenEnd)
+                                .OrderByDescending(log => log.timestamp)
+                                .ToList();
+
+                            var closestSurface = candidateSurfaces.FirstOrDefault();
+
+                            if (closestSurface != null)
+                            {
+                                Debug.Log($"'{word}' at {tokenStart:F2}-{tokenEnd:F2}s likely refers to surface position: {closestSurface.position}");
+                                pointingLogger.ShowMarker(closestSurface.position, closestSurface.normal, Color.green);
+                                pointedPosition = new float[] {closestSurface.position.x,closestSurface.position.y,closestSurface.position.z};
+                                pointedSurfaceObject = closestSurface.surfaceObject != null
+                                    ? closestSurface.surfaceObject.name
+                                    : "Unnamed Surface";
+                                Debug.Log($"Surface object name: {pointedSurfaceObject}");
+                            }
+                            else
+                            {
+                                Debug.LogWarning($"'{word}' at {tokenStart:F2}-{tokenEnd:F2}s: No surface log match.");
+                            }
+                        }
+
+                    }
+                }
+            }
+
+            // Buffer the command and metadata
+            pendingCommand = new BufferedCommand
+            {
+                command = userQuery,
+                pointedObject = pointedObject,
+                pointedPosition = pointedPosition,
+                pointedSurfaceObject = pointedSurfaceObject 
+            };
+
+            GiveFeedback($"Your command is:\n\"{userQuery}\"\n\n" + "To send this command, please say 'Yes, send'.\n" + "Or simply repeat your full command again to change it.", readyColor, stopBeep);
+            //dashboardConnection.LogToDashboard($"STT: {userQuery}");
+            Debug.Log($"Buffered command: {userQuery}");
+        }
+
+        private bool IsInvalidTranscription(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return true;
+
+            string lower = text.ToLowerInvariant();
+
+            // Add more tags as needed
+            return lower.Contains("[blank_audio]") ||
+                   lower.Contains("[silence]") ||
+                   lower.Contains("[no speech]") ||
+                   (lower.StartsWith("[") && lower.EndsWith("]")); // catch generic bracket tags
+        }
+
+        private float GetMaxVolume(AudioClip clip)
+        {
+            if (clip == null || clip.samples == 0) return 0f;
+
+            int micPosition = Microphone.GetPosition(selectedMic);
+            if (micPosition <= 0 || micPosition > clip.samples) return 0f;
+
+            int sampleSize = 1024;
+            float[] samples = new float[sampleSize];
+            int startSample = Mathf.Max(0, micPosition - sampleSize);
+
+            try
+            {
+                clip.GetData(samples, startSample);
+            }
+            catch
+            {
+                return 0f;
+            }
+
+            float max = 0f;
+            foreach (var sample in samples)
+                max = Mathf.Max(max, Mathf.Abs(sample));
+
+            return max;
+        }
+
+        public void GiveFeedback(string message, Color color, AudioClip clip = null)
+        {
+            if (recordInstructionText != null)
+                recordInstructionText.text = message;
+
+            if (backgroundPanel != null)
+                backgroundPanel.color = color;
+
+            if (clip != null && audioSource != null)
+                audioSource.PlayOneShot(clip);
+
+            //StartCoroutine(FadeBackground(color));
+        }
+
+        private IEnumerator FadeBackground(Color fromColor, float duration = 1.5f)
+        {
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                backgroundPanel.color = Color.Lerp(fromColor, Color.clear, elapsed / duration);
+                elapsed += Time.deltaTime;
+                yield return null;
+            }
+            backgroundPanel.color = Color.clear;
+        }
+
+        public void ClearOutput()
+        {
+            userQuery = null;
+        }
+
+        //Hex to Color converter
+        public Color HexToColor(string hex)
+        {
+            if (ColorUtility.TryParseHtmlString(hex, out Color color))
+                return color;
+            else
+                return Color.magenta; // fallback color
+        }
+    }
+}
