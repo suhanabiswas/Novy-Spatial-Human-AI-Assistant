@@ -3,6 +3,16 @@
 .DS_Store
 .idea
 
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild*/
+[Ll]ogs/
+[Mm]emoryCaptures/
+UserSettings/
+Library/PackageCache/
+
+
 /builds/*
 /images/*
 /Shot-*.png
