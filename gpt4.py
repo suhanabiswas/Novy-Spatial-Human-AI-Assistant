@@ -14,9 +14,9 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Azure OpenAI Client Setup
 client = AzureOpenAI(
-    api_key="AH8jeF2q0Lb3t0PPthq4VCCL2I5gt5BeINph8qQttdJHaPCwHFrmJQQJ99BJACHYHv6XJ3w3AAAAACOGmXks",  # Replace
-    api_version="2025-01-01-preview",
-    azure_endpoint="https://ifige-mheqp08u-eastus2.openai.azure.com/"  # Replace
+    api_key="",  # Replace
+    api_version="",
+    azure_endpoint=""  # Replace
 )
 
 DEPLOYMENT_NAME = "gpt-4.1"  # Replace with your actual deployment name
