@@ -547,7 +547,9 @@ MonoBehaviour:
   isAwaitingChangeConfirmation: 0
   queryHandler: {fileID: 1865639205}
   responseHandler: {fileID: 1865639203}
-  manager: {fileID: 404771073}
+  azureKey: 5QgJtkdpTqZh5jQmfZ76mz2rm6zSI4JrSj2Y1a9lzQN5yFzjCj64JQQJ99BKAC5RqLJXJ3w3AAAAACOGS9QT
+  azureEndpoint: https://stt-xr-lab-resource.cognitiveservices.azure.com/
+  azureLanguage: en-US
   queryInputHandler: {fileID: 1865639205}
   MainCamera: {fileID: 428136880}
   voiceCommandFeedbackWindow: {fileID: 1865639208}
