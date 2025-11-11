@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.CognitiveServices.Speech;
@@ -38,69 +39,137 @@ public sealed class AzureSpeechManager
         public string ErrorDetails;
     }
 
+    /// <summary>
+    /// Saves the AudioClip as a 16 kHz mono PCM WAV to a temp file and calls Azure with FromWavFileInput.
+    /// </summary>
     public async Task<AzureResult> GetTextAsync(AudioClip clip)
     {
         if (clip == null || clip.samples == 0)
             return new AzureResult { Text = null, Words = Array.Empty<AzureWord>(), Reason = ResultReason.NoMatch };
 
-        var pcm16 = ClipToPCM16kMono(clip);
-        var format = AudioStreamFormat.GetWaveFormatPCM(16000, 16, 1);
+        // 1) Prepare WAV temp file (16k mono PCM16)
+        string tempDir = string.IsNullOrEmpty(Application.temporaryCachePath)
+            ? Application.persistentDataPath
+            : Application.temporaryCachePath;
 
-        using var pushStream = AudioInputStream.CreatePushStream(format);
-        using var audioConfig = AudioConfig.FromStreamInput(pushStream);
+        Directory.CreateDirectory(tempDir);
+        string wavPath = Path.Combine(tempDir, $"stt_{Guid.NewGuid():N}.wav");
 
-        pushStream.Write(pcm16);
-        pushStream.Close();
-
-        // Endpoint-based config
-        var speechConfig = SpeechConfig.FromEndpoint(new Uri(_endpoint), _key);
-        speechConfig.SpeechRecognitionLanguage = _language;
-        speechConfig.OutputFormat = OutputFormat.Detailed;
-        speechConfig.RequestWordLevelTimestamps();
-
-        using var recognizer = new SpeechRecognizer(speechConfig, audioConfig);
-        var result = await recognizer.RecognizeOnceAsync().ConfigureAwait(false);
-
-        if (result.Reason == ResultReason.Canceled)
+        try
         {
-            var cancel = CancellationDetails.FromResult(result);
+            WriteWav16kMono(clip, wavPath);
+
+       
+            var speechConfig = SpeechConfig.FromEndpoint(new Uri(_endpoint), _key);
+            speechConfig.SpeechRecognitionLanguage = _language;
+            speechConfig.OutputFormat = OutputFormat.Detailed;
+            speechConfig.RequestWordLevelTimestamps();
+            speechConfig.SetProperty(PropertyId.Speech_SegmentationSilenceTimeoutMs, "2000");
+
+
+            using var audioConfig = AudioConfig.FromWavFileInput(wavPath);
+            using var recognizer = new SpeechRecognizer(speechConfig, audioConfig);
+            var result = await recognizer.RecognizeOnceAsync().ConfigureAwait(false);
+
+            if (result.Reason == ResultReason.Canceled)
+            {
+                var cancel = CancellationDetails.FromResult(result);
+                return new AzureResult
+                {
+                    Text = null,
+                    Words = Array.Empty<AzureWord>(),
+                    Reason = result.Reason,
+                    ErrorDetails = cancel?.ErrorDetails
+                };
+            }
+
+            var top = result.Best()?.FirstOrDefault();
+            var words = top?.Words?.Select(w => new AzureWord
+            {
+                Text = w.Word,
+                StartSec = w.Offset / 10_000_000.0,              // ticks → seconds
+                EndSec = (w.Offset + w.Duration) / 10_000_000.0
+            }).ToArray() ?? Array.Empty<AzureWord>();
+
+            return new AzureResult
+            {
+                Text = result.Text,
+                Words = words,
+                Reason = result.Reason,
+                ErrorDetails = null
+            };
+        }
+        catch (Exception ex)
+        {
             return new AzureResult
             {
                 Text = null,
                 Words = Array.Empty<AzureWord>(),
-                Reason = result.Reason,
-                ErrorDetails = cancel?.ErrorDetails
+                Reason = ResultReason.Canceled,
+                ErrorDetails = ex.Message
             };
         }
-
-        var top = result.Best()?.FirstOrDefault();
-        var words = top?.Words?.Select(w => new AzureWord
+        finally
         {
-            Text = w.Word,
-            StartSec = w.Offset / 10_000_000.0,
-            EndSec = (w.Offset + w.Duration) / 10_000_000.0
-        }).ToArray() ?? Array.Empty<AzureWord>();
-
-        return new AzureResult
-        {
-            Text = result.Text,
-            Words = words,
-            Reason = result.Reason,
-            ErrorDetails = null
-        };
+            try { if (File.Exists(wavPath)) File.Delete(wavPath); } catch { /* ignore */ }
+        }
     }
 
-    // --- Helper: AudioClip → 16 kHz mono PCM16 LE ---
-    private static byte[] ClipToPCM16kMono(AudioClip clip)
+    // ----------------- WAV helpers -----------------
+
+    private static void WriteWav16kMono(AudioClip clip, string path)
     {
-        int totalSamples = clip.samples * clip.channels;
-        var interleaved = new float[totalSamples];
+        // Resample to 16k mono PCM16
+        float[] mono16k = ResampleTo16kMono(clip);
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+        using var bw = new BinaryWriter(fs);
+
+        int sampleCount = mono16k.Length;
+        int byteRate = 16000 * 1 * 16 / 8;
+        short blockAlign = (short)(1 * 16 / 8);
+        int subchunk2Size = sampleCount * 2;
+        int chunkSize = 36 + subchunk2Size;
+
+        // RIFF header
+        bw.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+        bw.Write(chunkSize);
+        bw.Write(System.Text.Encoding.ASCII.GetBytes("WAVE"));
+
+        // fmt  subchunk
+        bw.Write(System.Text.Encoding.ASCII.GetBytes("fmt "));
+        bw.Write(16);                 // Subchunk1Size for PCM
+        bw.Write((short)1);           // AudioFormat = PCM
+        bw.Write((short)1);           // NumChannels = 1
+        bw.Write(16000);              // SampleRate
+        bw.Write(byteRate);           // ByteRate
+        bw.Write(blockAlign);         // BlockAlign
+        bw.Write((short)16);          // BitsPerSample
+
+        // data subchunk
+        bw.Write(System.Text.Encoding.ASCII.GetBytes("data"));
+        bw.Write(subchunk2Size);
+
+        // PCM samples
+        for (int i = 0; i < sampleCount; i++)
+        {
+            short s = FloatToPCM16(mono16k[i]);
+            bw.Write(s);
+        }
+    }
+
+    private static float[] ResampleTo16kMono(AudioClip clip)
+    {
+        int total = clip.samples * clip.channels;
+        var interleaved = new float[total];
         clip.GetData(interleaved, 0);
 
         int frames = clip.samples;
         var mono = new float[frames];
+
         if (clip.channels == 1)
+        {
             Array.Copy(interleaved, mono, frames);
+        }
         else
         {
             for (int i = 0; i < frames; i++)
@@ -112,37 +181,33 @@ public sealed class AzureSpeechManager
             }
         }
 
-        int srcRate = clip.frequency;
+        int srcRate = clip.frequency <= 0 ? 16000 : clip.frequency;
         const int dstRate = 16000;
-        if (srcRate <= 0) srcRate = dstRate;
-        float resampleRatio = (float)dstRate / srcRate;
-        int dstFrames = Mathf.Max(1, Mathf.RoundToInt(mono.Length * resampleRatio));
-        var mono16k = new float[dstFrames];
 
-        if (Mathf.Approximately(resampleRatio, 1f))
-            Array.Copy(mono, mono16k, Math.Min(dstFrames, mono.Length));
-        else
+        if (srcRate == dstRate)
         {
-            for (int i = 0; i < dstFrames; i++)
-            {
-                float srcPos = i / resampleRatio;
-                int i0 = Mathf.Clamp((int)Mathf.Floor(srcPos), 0, mono.Length - 1);
-                int i1 = Mathf.Clamp(i0 + 1, 0, mono.Length - 1);
-                float t = srcPos - i0;
-                mono16k[i] = Mathf.Lerp(mono[i0], mono[i1], t);
-            }
+            return (float[])mono.Clone();
         }
 
-        var pcm = new byte[dstFrames * 2];
-        int p = 0;
+        float ratio = (float)dstRate / srcRate;
+        int dstFrames = Mathf.Max(1, Mathf.RoundToInt(mono.Length * ratio));
+        var dst = new float[dstFrames];
+
         for (int i = 0; i < dstFrames; i++)
         {
-            var clamped = Mathf.Clamp(mono16k[i], -1f, 1f);
-            short s = (short)Mathf.RoundToInt(clamped * short.MaxValue);
-            pcm[p++] = (byte)(s & 0xFF);
-            pcm[p++] = (byte)((s >> 8) & 0xFF);
+            float srcPos = i / ratio;
+            int i0 = Mathf.Clamp((int)Mathf.Floor(srcPos), 0, mono.Length - 1);
+            int i1 = Mathf.Clamp(i0 + 1, 0, mono.Length - 1);
+            float t = srcPos - i0;
+            dst[i] = Mathf.Lerp(mono[i0], mono[i1], t);
         }
 
-        return pcm;
+        return dst;
+    }
+
+    private static short FloatToPCM16(float f)
+    {
+        var clamped = Mathf.Clamp(f, -1f, 1f);
+        return (short)Mathf.RoundToInt(clamped * short.MaxValue);
     }
 }
