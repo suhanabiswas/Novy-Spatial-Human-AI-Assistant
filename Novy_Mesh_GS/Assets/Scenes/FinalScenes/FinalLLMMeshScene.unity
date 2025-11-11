@@ -3680,6 +3680,11 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 21300000, guid: 16aa5174145c554439ccb73687f8f031, type: 3}
     - target: {fileID: 6571244642760690605, guid: 8e879a03b3b6f08478848260c5f0e51b, type: 3}
+      propertyPath: m_text
+      value: I am your spatial AI assistant to help you redesign your space. Please
+        start your command with "Hey Novy..."
+      objectReference: {fileID: 0}
+    - target: {fileID: 6571244642760690605, guid: 8e879a03b3b6f08478848260c5f0e51b, type: 3}
       propertyPath: m_fontSize
       value: 15
       objectReference: {fileID: 0}

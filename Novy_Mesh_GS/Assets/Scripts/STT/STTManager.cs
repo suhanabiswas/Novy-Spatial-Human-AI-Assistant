@@ -227,7 +227,7 @@ namespace Whisper.Samples
 
             if (!isAwaitingConfirmation)
             {
-                GiveFeedback("Ready for your command. Listening...", listeningColor, startBeep);
+                GiveFeedback("Ready for your command! Please start your command with \"Hey Novy...\"", listeningColor, startBeep);
             }
 
             Debug.Log("Started recording");
@@ -275,7 +275,7 @@ namespace Whisper.Samples
             StartCoroutine(ProcessClip(finalClip));
         }
 
-        private IEnumerator ProcessClip(AudioClip clip)
+        /*private IEnumerator ProcessClip(AudioClip clip)
         {
             pointingLogger.StopRecordingTracking();
 
@@ -298,8 +298,19 @@ namespace Whisper.Samples
                 string userQuery = res.Text?.Trim();
                 string loweredQuery = userQuery?.ToLowerInvariant();
 
-                if (!string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery))
+                // --- Wake word check ---
+                bool hasWakeWord = !string.IsNullOrWhiteSpace(loweredQuery) &&
+                                   (loweredQuery.Contains("hey") ||
+                                    loweredQuery.Contains("hello") ||
+                                    loweredQuery.Contains("hi") ||
+                                    loweredQuery.Contains("novi") ||
+                                    loweredQuery.Contains("novy") ||
+                                    loweredQuery.Contains("nobi") ||
+                                    loweredQuery.Contains("noby"));
+
+                if (!string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery) && hasWakeWord)
                 {
+                    // proceed as before (send or buffer command)
                     // If user says "send", submit the pending command
                     if (((loweredQuery.Contains("send")
                           || loweredQuery.Contains("sent")
@@ -347,7 +358,139 @@ namespace Whisper.Samples
 
             isProcessing = false;
             yield return new WaitForSeconds(3f);
+        }*/
+
+        private IEnumerator ProcessClip(AudioClip clip)
+        {
+            pointingLogger.StopRecordingTracking();
+
+            if (azureManager == null)
+            {
+                Debug.LogError("AzureSpeechManager is not initialized. Check key/endpoint.");
+                isProcessing = false;
+                yield break;
+            }
+
+            var task = azureManager.GetTextAsync(clip);
+            yield return new WaitUntil(() => task.IsCompleted);
+
+            var res = task.Result; // AzureSpeechManager.AzureResult
+
+            if (res != null)
+            {
+                string userQuery = res.Text?.Trim();
+                string loweredQuery = userQuery?.ToLowerInvariant();
+                Debug.Log(loweredQuery); 
+
+                // Wake words
+                bool hasWakeWord = !string.IsNullOrWhiteSpace(loweredQuery) &&
+                   (loweredQuery.Contains("hey") ||
+                    loweredQuery.Contains("hi") ||
+                    loweredQuery.Contains("novi") ||
+                    loweredQuery.Contains("novy") ||
+                    loweredQuery.Contains("nobi") ||
+                    loweredQuery.Contains("noby") ||
+                    loweredQuery.Contains("movie") ||
+                    loweredQuery.Contains("movy") ||
+                    loweredQuery.Contains("navy") ||
+                    loweredQuery.Contains("nevi") ||
+                    loweredQuery.Contains("nevy") ||
+                    loweredQuery.Contains("mobi") ||
+                    loweredQuery.Contains("moby") ||
+                    loweredQuery.Contains("finally"));
+
+                // Only act if: non-empty, not invalid, and contains a wake word
+                if (!string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery) && hasWakeWord)
+                {
+                    // 1) Collect pointing metadata the same way as before
+                    onNewBufferCommand(res, userQuery);    // this sets pendingCommand with pointed data
+
+                    // 2) Immediately send (no "yes, send" step)
+                    
+                    if (pendingCommand != null)
+                    {
+                        string cleaned = CleanWakeWords(pendingCommand.command);
+
+                        // If the user only said a wake word (no actual command)
+                        if (string.IsNullOrWhiteSpace(cleaned))
+                        {
+                            // Just prompt the user to continue; do not submit
+                            GiveFeedback("Please continue your command after saying \"Hey Novy...\" ", readyColor, startBeep);
+                            Debug.Log("Wake word detected without a command. Prompting user to continue.");
+                            pendingCommand = null;   // clear any buffered data
+                            isAwaitingConfirmation = false; // keep flow simple (no confirm mode)
+                            isProcessing = false;
+                            yield return new WaitForSeconds(1f); // optional small pause
+                            yield break; // end this processing cycle
+                        }
+
+                        // otherwise proceed to send immediately, as you already do
+                        if (queryHandler != null)
+                        {
+                            queryHandler.pointedTargetObject = pendingCommand.pointedObject;
+                            queryHandler.pointedTargetPos = pendingCommand.pointedPosition;
+                            queryHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
+                        }
+                        if (responseHandler != null)
+                        {
+                            responseHandler.pointedTargetObject = pendingCommand.pointedObject;
+                            responseHandler.pointedTargetPos = pendingCommand.pointedPosition;
+                            responseHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
+                        }
+
+                        queryInputHandler.OnSubmit(cleaned);
+                        GiveFeedback($"Command sent and processing:\n\"{cleaned}\"", readyColor, successBeep);
+                        Debug.Log($"Sent with pointing data: {cleaned}");
+                        pendingCommand = null;
+                    }
+                }
+                else
+                {
+                    Debug.Log("Ignored transcription (no wake word or invalid/empty).");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("Transcription failed.");
+            }
+
+            isProcessing = false;
+            yield return new WaitForSeconds(3f);
         }
+
+
+        private static string CleanWakeWords(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return text;
+
+            // Accepted wake-word variants
+            string[] wakes =
+            {
+        "hey", "hi",
+        "novi", "novy",
+        "nobi", "noby",
+        "movie", "movy",
+        "navy", "nevi", "nevy",
+        "mobi", "moby", "finally"
+    };
+
+            string cleaned = text;
+
+            // Remove each wake word and any punctuation/spaces immediately after
+            foreach (var w in wakes)
+            {
+                cleaned = System.Text.RegularExpressions.Regex.Replace(
+                    cleaned,
+                    $@"\b{System.Text.RegularExpressions.Regex.Escape(w)}\b[:,!\.\s]*",
+                    "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            }
+
+            // Collapse extra spaces and trim
+            cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s{2,}", " ").Trim();
+            return cleaned;
+        }
+
 
         // --- UPDATED: accepts AzureSpeechManager.AzureResult instead of WhisperResult ---
         private void onNewBufferCommand(AzureSpeechManager.AzureResult res, string userQuery)
@@ -429,14 +572,14 @@ namespace Whisper.Samples
                 pointedSurfaceObject = pointedSurfaceObject
             };
 
-            GiveFeedback(
+           /* GiveFeedback(
                 $"Your command is:\n\"{userQuery}\"\n\n" +
                 "To send this command, please say 'Yes, send'.\n" +
                 "Or simply repeat your full command again to change it.",
                 readyColor,
                 stopBeep);
 
-            Debug.Log($"Buffered command: {userQuery}");
+            Debug.Log($"Buffered command: {userQuery}");*/
         }
 
         private bool IsInvalidTranscription(string text)

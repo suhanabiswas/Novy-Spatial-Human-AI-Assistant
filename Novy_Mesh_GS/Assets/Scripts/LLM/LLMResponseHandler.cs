@@ -139,7 +139,7 @@ public class LLMResponseHandler : MonoBehaviour
                 }
                 else
                 {
-                    sTTManager.GiveFeedback($"Unfortunately, I could not execute your command: {latestResponse.reason}. Please try again", sTTManager.HexToColor("#633335"));
+                    sTTManager.GiveFeedback($"Unfortunately, I could not execute your command: {latestResponse.reason}. Please start your next command with \"Hey Novy...\"", sTTManager.HexToColor("#633335"));
                 }
             }
             catch (JsonException ex)
@@ -198,7 +198,7 @@ public class LLMResponseHandler : MonoBehaviour
         ApplyAction(latestResponse);
         exporter.SaveRoomLayout(); // Save & re-upload updated layout
         if(latestResponse.action != "undo")
-            sTTManager.GiveFeedback("Action applied and layout updated. Ready for your next command...", sTTManager.HexToColor("#485E30"));
+            sTTManager.GiveFeedback("Action applied and layout updated. Please start your next command with \"Hey Novy...\"...", sTTManager.HexToColor("#485E30"));
     }
 
     public void OnUserRetries()
@@ -790,7 +790,7 @@ public class LLMResponseHandler : MonoBehaviour
     {
         if (previousTargets == null || previousTargets.Count == 0)
         {
-            sTTManager.GiveFeedback("No previous targets to undo.", sTTManager.HexToColor("#633335"));
+            sTTManager.GiveFeedback("No previous targets to undo. Ready for your command! Please start your command with \"Hey Novy...\"", sTTManager.HexToColor("#633335"));
             return;
         }
 
@@ -857,13 +857,13 @@ public class LLMResponseHandler : MonoBehaviour
         if (undoneObjectNames.Count > 0)
         {
             string names = string.Join(", ", undoneObjectNames);
-            string message = $"Undid changes to: {names}. Please give the next command.";
+            string message = $"Undid changes to: {names}. Please start your next command with \"Hey Novy...\".";
             sTTManager.GiveFeedback(message, sTTManager.HexToColor("#485E30"));
             exporter.SaveRoomLayout();
         }
         else
         {
-            sTTManager.GiveFeedback("No cached state found for previous targets.", sTTManager.HexToColor("#633335"));
+            sTTManager.GiveFeedback("No cached state found for previous targets.Please start your next command with \"Hey Novy...\"", sTTManager.HexToColor("#633335"));
         }
     }
 
