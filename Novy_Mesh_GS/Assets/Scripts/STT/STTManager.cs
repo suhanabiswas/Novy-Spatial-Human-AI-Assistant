@@ -388,7 +388,7 @@ namespace Whisper.Samples
                             }
                         }
 
-                        if (word == "here" || word == "there" || word == "this")
+                        if (word == "here" || word == "there" || word == "this" || word == "that")
                         {
                             var candidateSurfaces = pointingLogger.SurfaceLogs
                                 .Where(log => log.timestamp >= tokenStart && log.timestamp <= tokenEnd)
