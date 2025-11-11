@@ -39,9 +39,7 @@ public sealed class AzureSpeechManager
         public string ErrorDetails;
     }
 
-    /// <summary>
-    /// Saves the AudioClip as a 16 kHz mono PCM WAV to a temp file and calls Azure with FromWavFileInput.
-    /// </summary>
+    // Saves the AudioClip as a 16 kHz mono PCM WAV to a temp file and calls Azure with FromWavFileInput
     public async Task<AzureResult> GetTextAsync(AudioClip clip)
     {
         if (clip == null || clip.samples == 0)
@@ -115,7 +113,6 @@ public sealed class AzureSpeechManager
         }
     }
 
-    // ----------------- WAV helpers -----------------
 
     private static void WriteWav16kMono(AudioClip clip, string path)
     {
