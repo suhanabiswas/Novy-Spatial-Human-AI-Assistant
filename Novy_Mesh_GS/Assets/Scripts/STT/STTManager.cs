@@ -32,7 +32,9 @@ namespace Whisper.Samples
         public string azureKey;
         public string azureEndpoint;
         public string azureLanguage = "en-US";
-        private AzureSpeechManager azureManager;
+        private WhisperSpeechManager whisperManager;
+        public string openAiApiKey;
+
         // ------------------------
 
         public QueryInputHandler queryInputHandler;
@@ -100,14 +102,20 @@ namespace Whisper.Samples
             }
 
             // --- Azure init ---
-            if (!string.IsNullOrWhiteSpace(azureKey) && !string.IsNullOrWhiteSpace(azureEndpoint))
+            /*if (!string.IsNullOrWhiteSpace(azureKey) && !string.IsNullOrWhiteSpace(azureEndpoint))
             {
                 azureManager = new AzureSpeechManager(azureKey, azureEndpoint, azureLanguage);
             }
             else
             {
                 Debug.LogWarning("AzureSpeechManager missing key/endpoint. Set them in the inspector.");
-            }
+            }*/
+
+
+            if (!string.IsNullOrWhiteSpace(openAiApiKey))
+                whisperManager = new WhisperSpeechManager(openAiApiKey);
+
+
         }
 
         private void Start()
@@ -275,156 +283,46 @@ namespace Whisper.Samples
             StartCoroutine(ProcessClip(finalClip));
         }
 
-        /*private IEnumerator ProcessClip(AudioClip clip)
-        {
-            pointingLogger.StopRecordingTracking();
-
-            if (azureManager == null)
-            {
-                Debug.LogError("AzureSpeechManager is not initialized. Check key/endpoint.");
-                isProcessing = false;
-                yield break;
-            }
-
-            var task = azureManager.GetTextAsync(clip);
-            yield return new WaitUntil(() => task.IsCompleted);
-
-            var res = task.Result; // AzureSpeechManager.AzureResult
-
-            if (res != null)
-            {
-                isAwaitingConfirmation = true;
-
-                string userQuery = res.Text?.Trim();
-                string loweredQuery = userQuery?.ToLowerInvariant();
-
-                // --- Wake word check ---
-                bool hasWakeWord = !string.IsNullOrWhiteSpace(loweredQuery) &&
-                                   (loweredQuery.Contains("hey") ||
-                                    loweredQuery.Contains("hello") ||
-                                    loweredQuery.Contains("hi") ||
-                                    loweredQuery.Contains("novi") ||
-                                    loweredQuery.Contains("novy") ||
-                                    loweredQuery.Contains("nobi") ||
-                                    loweredQuery.Contains("noby"));
-
-                if (!string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery) && hasWakeWord)
-                {
-                    // proceed as before (send or buffer command)
-                    // If user says "send", submit the pending command
-                    if (((loweredQuery.Contains("send")
-                          || loweredQuery.Contains("sent")
-                          || loweredQuery.Contains("yes")
-                          || loweredQuery.Contains("yes send")
-                          || loweredQuery.Contains("yes sent"))
-                         || loweredQuery == "end"
-                         || loweredQuery == "and"
-                         || loweredQuery == "ant")
-                        && pendingCommand != null)
-                    {
-                        if (queryHandler != null)
-                        {
-                            queryHandler.pointedTargetObject = pendingCommand.pointedObject;
-                            queryHandler.pointedTargetPos = pendingCommand.pointedPosition;
-                            queryHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
-                        }
-                        if (responseHandler != null)
-                        {
-                            responseHandler.pointedTargetObject = pendingCommand.pointedObject;
-                            responseHandler.pointedTargetPos = pendingCommand.pointedPosition;
-                            responseHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
-                        }
-
-                        queryInputHandler.OnSubmit(pendingCommand.command);
-                        GiveFeedback($"Command sent and processing:\n\"{pendingCommand.command}\"", readyColor, successBeep);
-                        isAwaitingConfirmation = false;
-                        Debug.Log($"Sent with pointing data: {pendingCommand.command}");
-                        pendingCommand = null;
-                    }
-                    else
-                    {
-                        onNewBufferCommand(res, userQuery);
-                    }
-                }
-                else
-                {
-                    Debug.Log("Skipped invalid transcription.");
-                }
-            }
-            else
-            {
-                Debug.LogWarning("Transcription failed.");
-            }
-
-            isProcessing = false;
-            yield return new WaitForSeconds(3f);
-        }*/
 
         private IEnumerator ProcessClip(AudioClip clip)
         {
             pointingLogger.StopRecordingTracking();
 
-            if (azureManager == null)
+            if (whisperManager == null)
             {
-                Debug.LogError("AzureSpeechManager is not initialized. Check key/endpoint.");
+                Debug.LogError("WhisperSpeechManager is not initialized. Check key.");
                 isProcessing = false;
                 yield break;
             }
 
-            var task = azureManager.GetTextAsync(clip);
+            //var task = azureManager.GetTextAsync(clip);
+            var task = whisperManager.GetTextAsync(clip);
             yield return new WaitUntil(() => task.IsCompleted);
 
-            var res = task.Result; // AzureSpeechManager.AzureResult
+            var res = task.Result; 
 
             if (res != null)
             {
                 string userQuery = res.Text?.Trim();
                 string loweredQuery = userQuery?.ToLowerInvariant();
-                Debug.Log(loweredQuery); 
-
-                // Wake words
-                bool hasWakeWord = !string.IsNullOrWhiteSpace(loweredQuery) &&
-                   (loweredQuery.Contains("hey") ||
-                    loweredQuery.Contains("hi") ||
-                    loweredQuery.Contains("novi") ||
-                    loweredQuery.Contains("novy") ||
-                    loweredQuery.Contains("nobi") ||
-                    loweredQuery.Contains("noby") ||
-                    loweredQuery.Contains("movie") ||
-                    loweredQuery.Contains("movy") ||
-                    loweredQuery.Contains("navy") ||
-                    loweredQuery.Contains("nevi") ||
-                    loweredQuery.Contains("nevy") ||
-                    loweredQuery.Contains("mobi") ||
-                    loweredQuery.Contains("moby") ||
-                    loweredQuery.Contains("finally"));
-
-                // Only act if: non-empty, not invalid, and contains a wake word
-                if (!string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery) && hasWakeWord)
+                Debug.Log(loweredQuery);
+                if (!string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery))
                 {
-                    // 1) Collect pointing metadata the same way as before
-                    onNewBufferCommand(res, userQuery);    // this sets pendingCommand with pointed data
+                    // 1) Collect pointing metadata
+                    onNewBufferCommand(res, userQuery);
 
-                    // 2) Immediately send (no "yes, send" step)
-                    
                     if (pendingCommand != null)
                     {
-                        string cleaned = CleanWakeWords(pendingCommand.command);
+                        string cleaned = userQuery.Trim();
 
-                        // If the user only said a wake word (no actual command)
                         if (string.IsNullOrWhiteSpace(cleaned))
                         {
-                            // Just prompt the user to continue; do not submit
-                            GiveFeedback("Please continue your command after saying \"Hey Novy...\" ", readyColor, startBeep);
-                            Debug.Log("Wake word detected without a command. Prompting user to continue.");
-                            pendingCommand = null;   // clear any buffered data
-                            isAwaitingConfirmation = false; // keep flow simple (no confirm mode)
+                            GiveFeedback("Please say your command clearly.", readyColor, startBeep);
+                            pendingCommand = null;
                             isProcessing = false;
-                            yield return new WaitForSeconds(1f); // optional small pause
-                            yield break; // end this processing cycle
+                            yield break;
                         }
 
-                        // otherwise proceed to send immediately, as you already do
                         if (queryHandler != null)
                         {
                             queryHandler.pointedTargetObject = pendingCommand.pointedObject;
@@ -446,8 +344,9 @@ namespace Whisper.Samples
                 }
                 else
                 {
-                    Debug.Log("Ignored transcription (no wake word or invalid/empty).");
+                    Debug.Log("Ignored transcription (invalid/empty).");
                 }
+
             }
             else
             {
@@ -492,8 +391,8 @@ namespace Whisper.Samples
         }
 
 
-        // --- UPDATED: accepts AzureSpeechManager.AzureResult instead of WhisperResult ---
-        private void onNewBufferCommand(AzureSpeechManager.AzureResult res, string userQuery)
+        // --- UPDATED: accepts WhisperSpeechManager.WhisperResult instead of WhisperLocalResult ---
+        private void onNewBufferCommand(WhisperSpeechManager.WhisperResult res, string userQuery)
         {
             string pointedObject = null;
             float[] pointedPosition = null;
