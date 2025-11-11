@@ -29,9 +29,9 @@ namespace Whisper.Samples
         // --- Azure: add these ---
         [Header("Azure Speech")]
         [Tooltip("Your Azure Speech resource key")]
-        public string azureKey = "5QgJtkdpTqZh5jQmfZ76mz2rm6zSI4JrSj2Y1a9lzQN5yFzjCj64JQQJ99BKAC5RqLJXJ3w3AAAAACOGS9QT";
+        public string azureKey;
         [Tooltip("Your Azure Speech endpoint, e.g. https://<region>.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1")]
-        public string azureEndpoint = " https://stt-xr-lab-resource.cognitiveservices.azure.com/";
+        public string azureEndpoint;
         [Tooltip("BCP-47 locale like en-US, nl-NL, etc.")]
         public string azureLanguage = "en-US";
         private AzureSpeechManager azureManager;
