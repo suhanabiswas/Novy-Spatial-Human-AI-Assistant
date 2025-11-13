@@ -7,6 +7,9 @@ using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using UnityEngine;
 
+/// <summary>
+/// uses openai whisper1 model for STT
+/// </summary>
 public sealed class WhisperSpeechManager
 {
     private readonly string _apiKey;

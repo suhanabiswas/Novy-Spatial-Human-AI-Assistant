@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using UnityEngine;
 using TMPro;
 using UnityEngine.UI;
@@ -6,6 +7,11 @@ using UnityEngine.UI;
 using System.Linq;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+
+// NEW: NAudio usings
+using NAudio.Wave;                 
+using NAudio.Wave.SampleProviders; 
+
 
 namespace Whisper.Samples
 {
@@ -27,11 +33,11 @@ namespace Whisper.Samples
         public LLMResponseHandler responseHandler;
 
         // --- Azure: add these ---
-        [Header("Azure Speech")]
-        [Tooltip("Your Azure Speech resource key")]
-        public string azureKey;
-        public string azureEndpoint;
-        public string azureLanguage = "en-US";
+        [Header("Whisper Speech")]
+        [Tooltip("Our resource key")]
+        // public string azureKey;
+        // public string azureEndpoint;
+        // public string azureLanguage = "en-US";
         private WhisperSpeechManager whisperManager;
         public string openAiApiKey;
 
@@ -51,7 +57,6 @@ namespace Whisper.Samples
         public float silenceThreshold = 0.01f;
         public float silenceDurationToStop = 5f;
 
-        private AudioClip recordedClip;
         private AudioSource audioSource;
         private bool isRecording = false;
         private bool isProcessing = false;
@@ -63,7 +68,7 @@ namespace Whisper.Samples
 
         private Queue<float> volumeSamples = new Queue<float>();
         private int volumeSampleCount = 5;
-        private float volumeCheckInterval = 0.05f;
+        private float volumeCheckInterval = 0.03f;
 
         private Color listeningColor;
         private Color processingColor;
@@ -75,6 +80,186 @@ namespace Whisper.Samples
         public float maxSpeed = Mathf.Infinity;
 
         [SerializeField] private PointingEventLogger pointingLogger;
+
+        // ======== NAudio: rolling capture ========
+        private NAudioMic naudioMic;
+
+        #region NAudio Microphone (replacement for Unity Microphone, because it causes ALOT of lags and issues)
+        private class NAudioMic
+        {
+            public readonly int SampleRate;
+            public readonly int Channels;
+
+            private readonly object _lock = new object();
+            private WaveInEvent _waveIn;
+            private readonly List<float> _ring = new List<float>(1024 * 64);
+            private int _recordStartIndex = -1;
+
+            public NAudioMic(int sampleRate, int channels)
+            {
+                SampleRate = sampleRate;
+                Channels = channels;
+            }
+
+            private bool _stopping = false; // differentiate intentional stop
+
+            public void StartCapture(string deviceNameHint = null)
+            {
+                if (_waveIn != null) return;
+
+                int deviceIndex = 0;
+                if (!string.IsNullOrEmpty(deviceNameHint))
+                {
+                    for (int i = 0; i < WaveInEvent.DeviceCount; i++)
+                    {
+                        var caps = WaveInEvent.GetCapabilities(i);
+                        if (!string.IsNullOrEmpty(caps.ProductName) &&
+                            caps.ProductName.IndexOf(deviceNameHint, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            deviceIndex = i;
+                            break;
+                        }
+                    }
+                }
+
+                _stopping = false;
+
+                _waveIn = new WaveInEvent
+                {
+                    DeviceNumber = deviceIndex,
+                    WaveFormat = new WaveFormat(SampleRate, 16, Channels)
+                };
+
+                _waveIn.DataAvailable += (s, a) =>
+                {
+                    try
+                    {
+                        var wb = new WaveBuffer(a.Buffer);
+                        int sampleCount = a.BytesRecorded / 2; // 16-bit PCM
+
+                        lock (_lock)
+                        {
+                            // Reserve space to reduce re-allocs (optional micro-optim)
+                            int targetCount = _ring.Count + sampleCount;
+                            if (targetCount > _ring.Capacity) _ring.Capacity = targetCount;
+
+                            for (int i = 0; i < sampleCount; i++)
+                            {
+                                float v = wb.ShortBuffer[i] / 32768f;
+                                _ring.Add(v);
+                            }
+
+                            // keep ~30s
+                            int maxSamples = SampleRate * Channels * 30;
+                            int overflow = _ring.Count - maxSamples;
+                            if (overflow > 0)
+                            {
+                                _ring.RemoveRange(0, overflow);
+                                if (_recordStartIndex >= 0)
+                                {
+                                    _recordStartIndex -= overflow;
+                                    if (_recordStartIndex < 0) _recordStartIndex = 0; 
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"NAudio DataAvailable exception: {ex}");
+                        // swallow to avoid tearing down the capture thread
+                    }
+                };
+
+                _waveIn.RecordingStopped += (s, e) =>
+                {
+                    // If we didn’t intentionally stop, try to auto-recover
+                    if (!_stopping)
+                    {
+                        Debug.LogWarning($"NAudio recording stopped (Reason: {e.Exception?.Message ?? "no exception"}). Restarting...");
+                        try { _waveIn?.Dispose(); } catch { }
+                        _waveIn = null;
+                        // slight delay to allow device to recover
+                        UnityMainThreadDispatch(0.25f, () => StartCapture(deviceNameHint));
+                    }
+                };
+
+                _waveIn.StartRecording();
+            }
+
+            public void StopCapture()
+            {
+                _stopping = true;
+                if (_waveIn != null)
+                {
+                    try { _waveIn.StopRecording(); } catch { }
+                    try { _waveIn.Dispose(); } catch { }
+                    _waveIn = null;
+                }
+                lock (_lock)
+                {
+                    _ring.Clear();
+                    _recordStartIndex = -1;
+                }
+            }
+
+            // Optional: call this from Update() or a small coroutine
+            public void Watchdog(string deviceNameHint = null)
+            {
+                if (!_stopping && _waveIn == null)
+                {
+                    StartCapture(deviceNameHint);
+                }
+            }
+
+            // Helper to schedule on Unity thread; put this in your STTManager (outside NAudioMic) if you prefer
+            private static void UnityMainThreadDispatch(float delaySeconds, Action action)
+            {
+                // In your MonoBehaviour, you can implement a simple dispatcher/coroutine.
+                // If inside NAudioMic, call a provided callback from STTManager instead.
+            }
+
+
+
+            public void BeginLogicalRecording()
+            {
+                lock (_lock)
+                {
+                    _recordStartIndex = _ring.Count;
+                }
+            }
+
+            public float[] EndLogicalRecording()
+            {
+                lock (_lock)
+                {
+                    if (_recordStartIndex < 0) return Array.Empty<float>();
+                    int len = _ring.Count - _recordStartIndex;
+                    if (len <= 0) return Array.Empty<float>();
+                    var outArr = new float[len];
+                    _ring.CopyTo(_recordStartIndex, outArr, 0, len);
+                    _recordStartIndex = -1;
+                    return outArr;
+                }
+            }
+
+            public float GetRecentMaxVolume(int sampleCount = 1024)
+            {
+                lock (_lock)
+                {
+                    if (_ring.Count == 0) return 0f;
+                    int start = Math.Max(0, _ring.Count - sampleCount);
+                    float max = 0f;
+                    // use first channel for volume
+                    for (int i = start; i < _ring.Count; i += Channels)
+                    {
+                        float v = Math.Abs(_ring[i]);
+                        if (v > max) max = v;
+                    }
+                    return max;
+                }
+            }
+        }
+        #endregion
 
         private void Awake()
         {
@@ -101,21 +286,19 @@ namespace Whisper.Samples
                 Debug.Log($"Using default mic: {selectedMic}");
             }
 
-            // --- Azure init ---
-            /*if (!string.IsNullOrWhiteSpace(azureKey) && !string.IsNullOrWhiteSpace(azureEndpoint))
-            {
-                azureManager = new AzureSpeechManager(azureKey, azureEndpoint, azureLanguage);
-            }
-            else
-            {
-                Debug.LogWarning("AzureSpeechManager missing key/endpoint. Set them in the inspector.");
-            }*/
-
+            // if (!string.IsNullOrWhiteSpace(azureKey) && !string.IsNullOrWhiteSpace(azureEndpoint)) { ... }
 
             if (!string.IsNullOrWhiteSpace(openAiApiKey))
                 whisperManager = new WhisperSpeechManager(openAiApiKey);
 
+            //Start continuous NAudio capture (mono @ 16k)
+            naudioMic = new NAudioMic(sampleRate, 1);
+            naudioMic.StartCapture(selectedMic);
+        }
 
+        private void OnDestroy()
+        {
+            naudioMic?.StopCapture();
         }
 
         private void Start()
@@ -125,6 +308,10 @@ namespace Whisper.Samples
 
         private void Update()
         {
+
+            // Keep the input alive if the OS glitches the device
+            naudioMic?.Watchdog(selectedMic);
+
             if (MainCamera != null && voiceCommandFeedbackWindow != null)
             {
                 Vector3 cameraPosition = MainCamera.transform.position;
@@ -159,7 +346,8 @@ namespace Whisper.Samples
                 if (!isRecording && !isProcessing)
                 {
                     Debug.Log("Waiting for voice...");
-                    AudioClip tempClip = Microphone.Start(selectedMic, true, 1, sampleRate);
+
+                    // NAudio-based pre-roll detection (no temp Microphone.Start)
                     yield return null;
 
                     float waitTime = 0f;
@@ -168,10 +356,9 @@ namespace Whisper.Samples
 
                     while (waitTime < 10f && !voiceDetected)
                     {
-                        if (IsVoiceDetected(tempClip, silenceThreshold))
+                        if (IsVoiceDetectedNAudio(silenceThreshold))
                         {
                             voiceDetected = true;
-                            Microphone.End(selectedMic);
                             StartRecording();
                             break;
                         }
@@ -182,7 +369,6 @@ namespace Whisper.Samples
 
                     if (!voiceDetected)
                     {
-                        Microphone.End(selectedMic);
                         Debug.Log("No voice detected after waiting.");
                         yield return new WaitForSeconds(1f);
                         continue;
@@ -191,7 +377,8 @@ namespace Whisper.Samples
 
                 if (isRecording)
                 {
-                    if (IsVoiceDetected(recordedClip, silenceThreshold))
+                    // ===== Use NAudio rolling buffer for silence detection =====
+                    if (IsVoiceDetectedNAudio(silenceThreshold))
                     {
                         silenceTimer = 0f;
                     }
@@ -211,13 +398,29 @@ namespace Whisper.Samples
 
         private bool IsVoiceDetected(AudioClip clip, float threshold)
         {
+            // kept for compatibility; not used in NAudio path
             float vol = GetSmoothedVolume(clip);
+            return vol > threshold;
+        }
+
+        private bool IsVoiceDetectedNAudio(float threshold)
+        {
+            float vol = GetSmoothedVolumeNAudio();
             return vol > threshold;
         }
 
         private float GetSmoothedVolume(AudioClip clip)
         {
+            // kept for compatibility; not used in NAudio path
             float vol = GetMaxVolume(clip);
+            if (volumeSamples.Count >= volumeSampleCount) volumeSamples.Dequeue();
+            volumeSamples.Enqueue(vol);
+            return volumeSamples.Average();
+        }
+
+        private float GetSmoothedVolumeNAudio()
+        {
+            float vol = naudioMic != null ? naudioMic.GetRecentMaxVolume(1024) : 0f;
             if (volumeSamples.Count >= volumeSampleCount) volumeSamples.Dequeue();
             volumeSamples.Enqueue(vol);
             return volumeSamples.Average();
@@ -227,7 +430,8 @@ namespace Whisper.Samples
         {
             if (isRecording || isProcessing) return;
 
-            recordedClip = Microphone.Start(selectedMic, true, recordDuration, sampleRate);
+            // ===== NAudio: mark start in rolling buffer =====
+            naudioMic.BeginLogicalRecording();
             pointingLogger.StartRecordingTracking();
 
             silenceTimer = 0f;
@@ -250,8 +454,8 @@ namespace Whisper.Samples
         {
             if (!isRecording) return;
 
-            int position = Microphone.GetPosition(selectedMic);
-            Microphone.End(selectedMic);
+            // ===== NAudio: grab recorded segment =====
+            var samples = naudioMic.EndLogicalRecording();
             isRecording = false;
 
             var hoveredObjects = pointingLogger.ObjectLogs;
@@ -259,30 +463,29 @@ namespace Whisper.Samples
 
             Debug.Log("Stopped recording");
 
+            int position = samples.Length;
             if (position <= 0)
             {
                 Debug.LogWarning("Recording too short — skipping processing.");
                 return;
             }
 
-            float[] data = new float[position];
-            recordedClip.GetData(data, 0);
-
             float maxVol = 0f;
-            foreach (var sample in data) maxVol = Mathf.Max(maxVol, Mathf.Abs(sample));
+            foreach (var sample in samples) maxVol = Mathf.Max(maxVol, Mathf.Abs(sample));
             if (maxVol < silenceThreshold)
             {
                 Debug.LogWarning($"Audio too quiet (max volume = {maxVol}) — skipping transcription.");
                 return;
             }
 
-            AudioClip finalClip = AudioClip.Create("clip", position, recordedClip.channels, recordedClip.frequency, false);
-            finalClip.SetData(data, 0);
+            // Build a Unity AudioClip so the rest of your flow remains unchanged
+            int channels = 1; // NAudioMic configured as mono
+            var finalClip = AudioClip.Create("clip", position / channels, channels, sampleRate, false);
+            finalClip.SetData(samples, 0);
 
             isProcessing = true;
             StartCoroutine(ProcessClip(finalClip));
         }
-
 
         private IEnumerator ProcessClip(AudioClip clip)
         {
@@ -299,7 +502,7 @@ namespace Whisper.Samples
             var task = whisperManager.GetTextAsync(clip);
             yield return new WaitUntil(() => task.IsCompleted);
 
-            var res = task.Result; 
+            var res = task.Result;
 
             if (res != null)
             {
@@ -357,7 +560,7 @@ namespace Whisper.Samples
             yield return new WaitForSeconds(3f);
         }
 
-
+        // use if need wake word to give commands
         private static string CleanWakeWords(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return text;
@@ -365,13 +568,13 @@ namespace Whisper.Samples
             // Accepted wake-word variants
             string[] wakes =
             {
-        "hey", "hi",
-        "novi", "novy",
-        "nobi", "noby",
-        "movie", "movy",
-        "navy", "nevi", "nevy",
-        "mobi", "moby", "finally"
-    };
+                "hey", "hi",
+                "novi", "novy",
+                "nobi", "noby",
+                "movie", "movy",
+                "navy", "nevi", "nevy",
+                "mobi", "moby", "finally"
+            };
 
             string cleaned = text;
 
@@ -389,7 +592,6 @@ namespace Whisper.Samples
             cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s{2,}", " ").Trim();
             return cleaned;
         }
-
 
         // --- UPDATED: accepts WhisperSpeechManager.WhisperResult instead of WhisperLocalResult ---
         private void onNewBufferCommand(WhisperSpeechManager.WhisperResult res, string userQuery)
@@ -470,15 +672,6 @@ namespace Whisper.Samples
                 pointedPosition = pointedPosition,
                 pointedSurfaceObject = pointedSurfaceObject
             };
-
-           /* GiveFeedback(
-                $"Your command is:\n\"{userQuery}\"\n\n" +
-                "To send this command, please say 'Yes, send'.\n" +
-                "Or simply repeat your full command again to change it.",
-                readyColor,
-                stopBeep);
-
-            Debug.Log($"Buffered command: {userQuery}");*/
         }
 
         private bool IsInvalidTranscription(string text)
@@ -491,21 +684,9 @@ namespace Whisper.Samples
 
         private float GetMaxVolume(AudioClip clip)
         {
-            if (clip == null || clip.samples == 0) return 0f;
-
-            int micPosition = Microphone.GetPosition(selectedMic);
-            if (micPosition <= 0 || micPosition > clip.samples) return 0f;
-
-            int sampleSize = 1024;
-            float[] samples = new float[sampleSize];
-            int startSample = Mathf.Max(0, micPosition - sampleSize);
-
-            try { clip.GetData(samples, startSample); }
-            catch { return 0f; }
-
-            float max = 0f;
-            foreach (var sample in samples) max = Mathf.Max(max, Mathf.Abs(sample));
-            return max;
+            // NAudio path: ignore clip, get recent volume
+            if (naudioMic == null) return 0f;
+            return naudioMic.GetRecentMaxVolume(1024);
         }
 
         public void GiveFeedback(string message, Color color, AudioClip clip = null)

@@ -6,6 +6,10 @@ using Microsoft.CognitiveServices.Speech;
 using Microsoft.CognitiveServices.Speech.Audio;
 using UnityEngine;
 
+/// <summary>
+/// uses azure open ai speech model with api
+/// </summary>
+
 public sealed class AzureSpeechManager
 {
     private readonly string _key;
