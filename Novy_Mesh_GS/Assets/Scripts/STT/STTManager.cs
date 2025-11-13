@@ -166,13 +166,11 @@ namespace Whisper.Samples
                     catch (Exception ex)
                     {
                         Debug.LogError($"NAudio DataAvailable exception: {ex}");
-                        // swallow to avoid tearing down the capture thread
                     }
                 };
 
                 _waveIn.RecordingStopped += (s, e) =>
                 {
-                    // If we didn’t intentionally stop, try to auto-recover
                     if (!_stopping)
                     {
                         Debug.LogWarning($"NAudio recording stopped (Reason: {e.Exception?.Message ?? "no exception"}). Restarting...");
@@ -202,7 +200,6 @@ namespace Whisper.Samples
                 }
             }
 
-            // Optional: call this from Update() or a small coroutine
             public void Watchdog(string deviceNameHint = null)
             {
                 if (!_stopping && _waveIn == null)
@@ -211,10 +208,10 @@ namespace Whisper.Samples
                 }
             }
 
-            // Helper to schedule on Unity thread; put this in your STTManager (outside NAudioMic) if you prefer
+            // Helper to schedule on Unity thread; put this in STTManager (outside NAudioMic) : Optional
             private static void UnityMainThreadDispatch(float delaySeconds, Action action)
             {
-                // In your MonoBehaviour, you can implement a simple dispatcher/coroutine.
+                // In MonoBehaviour, can implement a simple dispatcher/coroutine.
                 // If inside NAudioMic, call a provided callback from STTManager instead.
             }
 
@@ -291,7 +288,7 @@ namespace Whisper.Samples
             if (!string.IsNullOrWhiteSpace(openAiApiKey))
                 whisperManager = new WhisperSpeechManager(openAiApiKey);
 
-            //Start continuous NAudio capture (mono @ 16k)
+            //Start continuous NAudio capture
             naudioMic = new NAudioMic(sampleRate, 1);
             naudioMic.StartCapture(selectedMic);
         }
@@ -478,7 +475,7 @@ namespace Whisper.Samples
                 return;
             }
 
-            // Build a Unity AudioClip so the rest of your flow remains unchanged
+            // Build a Unity AudioClip 
             int channels = 1; // NAudioMic configured as mono
             var finalClip = AudioClip.Create("clip", position / channels, channels, sampleRate, false);
             finalClip.SetData(samples, 0);
