@@ -209,7 +209,7 @@ namespace Whisper.Samples
 
             private static void UnityMainThreadDispatch(float delaySeconds, Action action)
             {
-                // In your MonoBehaviour, you can implement a simple dispatcher/coroutine.
+                // In MonoBehaviour, can implement a simple dispatcher/coroutine.
                 // If inside NAudioMic, call a provided callback from STTManager instead.
             }
 
