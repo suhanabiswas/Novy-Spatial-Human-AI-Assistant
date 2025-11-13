@@ -166,19 +166,16 @@ namespace Whisper.Samples
                     catch (Exception ex)
                     {
                         Debug.LogError($"NAudio DataAvailable exception: {ex}");
-                        // swallow to avoid tearing down the capture thread
                     }
                 };
 
                 _waveIn.RecordingStopped += (s, e) =>
                 {
-                    // If we didn’t intentionally stop, try to auto-recover
                     if (!_stopping)
                     {
                         Debug.LogWarning($"NAudio recording stopped (Reason: {e.Exception?.Message ?? "no exception"}). Restarting...");
                         try { _waveIn?.Dispose(); } catch { }
                         _waveIn = null;
-                        // slight delay to allow device to recover
                         UnityMainThreadDispatch(0.25f, () => StartCapture(deviceNameHint));
                     }
                 };
@@ -202,7 +199,6 @@ namespace Whisper.Samples
                 }
             }
 
-            // Optional: call this from Update() or a small coroutine
             public void Watchdog(string deviceNameHint = null)
             {
                 if (!_stopping && _waveIn == null)
@@ -211,7 +207,6 @@ namespace Whisper.Samples
                 }
             }
 
-            // Helper to schedule on Unity thread; put this in your STTManager (outside NAudioMic) if you prefer
             private static void UnityMainThreadDispatch(float delaySeconds, Action action)
             {
                 // In your MonoBehaviour, you can implement a simple dispatcher/coroutine.
@@ -482,7 +477,7 @@ namespace Whisper.Samples
                 return;
             }
 
-            // Build a Unity AudioClip so the rest of your flow remains unchanged
+            // Build a Unity AudioClip so the rest of the flow remains unchanged
             int channels = 1; // NAudioMic configured as mono
             var finalClip = AudioClip.Create("clip", position / channels, channels, sampleRate, false);
             finalClip.SetData(samples, 0);
@@ -640,7 +635,6 @@ namespace Whisper.Samples
                             yield break; // end this processing cycle
                         }
 
-                        // otherwise proceed to send immediately, as you already do
                         if (queryHandler != null)
                         {
                             queryHandler.pointedTargetObject = pendingCommand.pointedObject;
