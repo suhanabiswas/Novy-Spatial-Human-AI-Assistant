@@ -26,14 +26,14 @@ namespace Whisper.Samples
         public QueryInputHandler queryHandler;
         public LLMResponseHandler responseHandler;
 
-        // --- Azure: add these ---
+
         [Header("Azure Speech")]
         [Tooltip("Your Azure Speech resource key")]
         public string azureKey;
         public string azureEndpoint;
         public string azureLanguage = "en-US";
         private AzureSpeechManager azureManager;
-        // ------------------------
+
 
         public QueryInputHandler queryInputHandler;
 
@@ -99,7 +99,6 @@ namespace Whisper.Samples
                 Debug.Log($"Using default mic: {selectedMic}");
             }
 
-            // --- Azure init ---
             if (!string.IsNullOrWhiteSpace(azureKey) && !string.IsNullOrWhiteSpace(azureEndpoint))
             {
                 azureManager = new AzureSpeechManager(azureKey, azureEndpoint, azureLanguage);

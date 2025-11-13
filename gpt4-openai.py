@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os, json
-from openai import AzureOpenAI
+from openai import OpenAI
 
 app = Flask(__name__)
 CORS(app)
@@ -12,14 +12,10 @@ CONVO_HISTORY_LOG_PATH = './conversation_history.json'
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Azure OpenAI Client Setup
-client = AzureOpenAI(
-    api_key="",  # Replace
-    api_version="",
-    azure_endpoint=""  # Replace
-)
+# OpenAI Client Setup
+client = OpenAI()
 
-DEPLOYMENT_NAME = "gpt-4.1"  # Replace with your actual deployment name
+DEPLOYMENT_NAME = "gpt-4o"  # Replace with your actual deployment name
 
 # In-memory state
 conversation_history = []
@@ -419,12 +415,10 @@ def runtime_query():
         print("=== Messages sent to GPT-4o ===")
         print(json.dumps(messages_to_send, indent=2))
 
-        # Call LLM
         response = client.chat.completions.create(
             model=DEPLOYMENT_NAME,
             messages=messages_to_send,
-            temperature=0.3,
-            max_tokens=500,
+            max_completion_tokens=500,
         )
 
         reply = response.choices[0].message.content.strip()
