@@ -3,7 +3,6 @@ using System.Collections;
 using UnityEngine;
 using TMPro;
 using UnityEngine.UI;
-// using Whisper.Utils;          // no longer needed
 using System.Linq;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -439,7 +438,7 @@ namespace Whisper.Samples
 
             if (!isAwaitingConfirmation)
             {
-                GiveFeedback("Ready for your command! Please start your command with \"Hey Novy...\"", listeningColor, startBeep);
+                //GiveFeedback("Ready for your command! Please start your command with \"Hey Novy...\"", listeningColor, startBeep);
             }
 
             Debug.Log("Started recording");
@@ -801,16 +800,16 @@ namespace Whisper.Samples
         // Call this right after detecting a wake word
         public void OnWakeWordDetected()
         {
-            UpdateVoiceState(VoiceState.WakeRecognized); // yellow + awake beep (startBeep)
-            OpenCommandWindow(5f);                        // 5s initial window
+            UpdateVoiceState(VoiceState.WakeRecognized); // yellow + chime
+            OpenCommandWindow(5f);                        // 5s grace to hear first speech
         }
 
-        // Call this right after you get a command transcription
-        // valid: true = green, false = red
+        // Call this right after you dispatch a command (valid/invalid is fine)
+        // We always restart a 5s window for the next command.
         public void OnCommandHeard(bool valid, string commandText)
         {
             UpdateVoiceState(valid ? VoiceState.CommandValid : VoiceState.CommandInvalid, commandText);
-            ExtendCommandWindow(3f); // reset to 3s from now
+            ExtendCommandWindow(5f); // reset to 5s for next possible command
         }
 
         // Manually close (e.g., on cancel)
@@ -819,7 +818,7 @@ namespace Whisper.Samples
             CloseCommandWindow();
         }
 
-        // Open command window for N seconds (wake phase)
+        // Open command window for N seconds (pre-speech grace)
         public void OpenCommandWindow(float seconds = 5f)
         {
             if (_commandWindowRoutine != null)
@@ -828,57 +827,72 @@ namespace Whisper.Samples
             isCommandWindowActive = true;
             _commandWindowRemaining = seconds;
 
-            // Immediately show "Listening..." (soft yellow) after wake chime text
+            // Immediately show "Listening..." (soft yellow) after wake message
             UpdateVoiceState(VoiceState.Listening);
 
             _commandWindowRoutine = StartCoroutine(CommandWindowTimer());
         }
 
-        // When a command is heard, reset the countdown to N seconds
-        public void ExtendCommandWindow(float seconds = 3f)
+        // When a (next) command is heard/executed, reset the post-command window
+        public void ExtendCommandWindow(float seconds = 5f)
         {
             if (!isCommandWindowActive)
             {
-                // If somehow inactive, just open it fresh
                 OpenCommandWindow(seconds);
                 return;
             }
 
             _commandWindowRemaining = seconds;
 
-            // After showing valid/invalid, go back to Listening until timeout or next command
-            // (Give a tiny delay so the user sees the green/red feedback)
+            // Briefly show green/red, then go back to Listening while we wait for next speech or timeout
             StartCoroutine(_ReturnToListeningSoon(0.6f));
         }
 
         private IEnumerator _ReturnToListeningSoon(float delay)
         {
             yield return new WaitForSeconds(delay);
-            if (isCommandWindowActive)
-                UpdateVoiceState(VoiceState.Listening); //Listening...
+            if (isCommandWindowActive && !isRecording && !isProcessing)
+                UpdateVoiceState(VoiceState.Listening); 
         }
 
-        // Core countdown loop. Updates UI text; closes when time elapses.
+        // Countdown logic:
+        // - While idle (no speech) -> count down from 5s and show remaining seconds
+        // - If speech starts (isRecording || isProcessing) -> PAUSE countdown until speech ends
+        // - After speech ends, your pipeline sends the command; OnCommandHeard() resets to 5s
         private IEnumerator CommandWindowTimer()
         {
-            // Update text every 0.25s to avoid spam
             const float tick = 0.25f;
 
-            while (_commandWindowRemaining > 0f && isCommandWindowActive)
+            while (isCommandWindowActive)
             {
-                // Only show countdown in Listening state to avoid overriding green/red messages
-                // If you want countdown visible during CommandValid/Invalid too, remove this check.
-                string currentMsg = "Listening for your command…";
-                if (_lastState == VoiceState.Listening) // see _lastState tracking below
+                // If user is talking or we're processing, PAUSE the countdown
+                if (isRecording || isProcessing)
                 {
-                    GiveFeedback($"{currentMsg} ({Mathf.CeilToInt(_commandWindowRemaining)}s)", new Color(0.9f, 0.9f, 0.1f));
+                    // Ensure the UI reflects "Listening…" during active capture
+                    if (_lastState != VoiceState.Listening)
+                        UpdateVoiceState(VoiceState.Listening);
+
+                    yield return null; // no time deducted
+                    continue;
+                }
+
+                // No active speech -> show countdown and tick down
+                if (_commandWindowRemaining <= 0f)
+                    break;
+
+                if (_lastState == VoiceState.Listening)
+                {
+                    GiveFeedback(
+                        $"Listening for your command… ({Mathf.CeilToInt(_commandWindowRemaining)}s)",
+                        new Color(0.9f, 0.9f, 0.1f) // soft yellow
+                    );
                 }
 
                 yield return new WaitForSeconds(tick);
                 _commandWindowRemaining -= tick;
             }
 
-            // Time’s up → close
+            // Time’s up (no speech in grace window) → close
             CloseCommandWindow();
         }
 
@@ -894,9 +908,52 @@ namespace Whisper.Samples
             isCommandWindowActive = false;
             _commandWindowRemaining = 0f;
 
-            UpdateVoiceState(VoiceState.Sleeping); // "Sleeping… need wake word again" + stopBeep
+            UpdateVoiceState(VoiceState.Sleeping); // grey "Sleeping… need wake word again"
         }
 
+        // ==== Action-phase aware UI helpers ====
+
+        private bool _externalActionInProgress = false;
+
+        // Pause countdown but keep command window ACTIVE.
+        // Use this right BEFORE you start applying/saving an action.
+        public void UI_BeginAction(string message = "Working on it…", AudioClip clip = null)
+        {
+            _externalActionInProgress = true;
+
+            // Stop only the countdown coroutine; keep window active so user sees UI
+            if (_commandWindowRoutine != null)
+            {
+                StopCoroutine(_commandWindowRoutine);
+                _commandWindowRoutine = null;
+            }
+
+            isCommandWindowActive = true; // ensure it's active visually
+            UpdateVoiceState(VoiceState.Listening); // keep it in listening theme while we work
+            GiveFeedback(message, processingColor, clip);
+        }
+
+        // Resume with a fresh 5s window AFTER action completes successfully.
+        public void UI_EndActionSuccess(string message = "Action applied.", AudioClip clip = null)
+        {
+            _externalActionInProgress = false;
+            GiveFeedback(message, readyColor, clip ?? successBeep);
+
+            // Start a fresh 5s window NOW for next command
+            if (isCommandWindowActive) ExtendCommandWindow(5f);
+            else OpenCommandWindow(5f);
+        }
+
+        // Resume with a fresh 5s window AFTER action failed / error message.
+        public void UI_EndActionFailure(string message = "Could not execute the command.", AudioClip clip = null)
+        {
+            _externalActionInProgress = false;
+            GiveFeedback(message, errorColor, clip ?? stopBeep);
+
+            // Start a fresh 5s window NOW for next command
+            if (isCommandWindowActive) ExtendCommandWindow(5f);
+            else OpenCommandWindow(5f);
+        }
 
         public enum VoiceState
     {
@@ -930,15 +987,12 @@ namespace Whisper.Samples
                     break;
 
                 case VoiceState.Listening:
-                    GiveFeedback(
-                        "Listening for your command…",
-                        new Color(0.9f, 0.9f, 0.1f) // soft yellow tone
-                    );
+                    //GiveFeedback( "Listening for your command…",new Color(0.9f, 0.9f, 0.1f));
                     break;
 
                 case VoiceState.CommandValid:
                     GiveFeedback(
-                        $"Command executed: {commandText}. Waiting for your next command",
+                        $"Working on your command: {commandText}...",
                         readyColor,
                         successBeep // optional AudioClip
                     );

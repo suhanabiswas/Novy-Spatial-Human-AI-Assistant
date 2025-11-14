@@ -132,20 +132,29 @@ public class LLMResponseHandler : MonoBehaviour
                     if (latestResponse.action.ToLower() != "undo")
                     {
                         previousTargets.Clear();
-                    } 
+                    }
+
+                    //Begin action phase: pause countdown + show "working..."
+                    sTTManager.UI_BeginAction("Applying your command…");
 
                     OnUserConfirms();
 
                 }
                 else
                 {
-                    sTTManager.GiveFeedback($"Unfortunately, I could not execute your command: {latestResponse.reason}. Please start your next command with \"Hey Novy...\"", sTTManager.HexToColor("#633335"));
+                    //Action failed: end action window and start 5s after failure msg
+                    sTTManager.UI_EndActionFailure(
+                        $"Unfortunately, I could not execute your command: {latestResponse.reason}. " +
+                        "Please try another command."
+                    );
+                    //sTTManager.GiveFeedback($"Unfortunately, I could not execute your command: {latestResponse.reason}. Please start your next command with \"Hey Novy...\"", sTTManager.HexToColor("#633335"));
                 }
             }
             catch (JsonException ex)
             {
                 Debug.LogError($"Failed to parse JSON: {ex.Message}");
-                sTTManager.GiveFeedback("Error encountered, processing command again, please wait.", sTTManager.HexToColor("#633335"));
+                sTTManager.UI_EndActionFailure("Error encountered. Processing command again…");
+                //sTTManager.GiveFeedback("Error encountered, processing command again, please wait.", sTTManager.HexToColor("#633335"));
                 //feedbackText.text = "Error encountered, processing command again, please wait.";
                 exporter.ResendLastQuery();
             }
@@ -197,18 +206,30 @@ public class LLMResponseHandler : MonoBehaviour
     {
         ApplyAction(latestResponse);
         exporter.SaveRoomLayout(); // Save & re-upload updated layout
-        if(latestResponse.action != "undo")
-            sTTManager.GiveFeedback("Action applied and layout updated. Please start your next command with \"Hey Novy...\"...", sTTManager.HexToColor("#485E30"));
+
+        if (latestResponse.action != "undo")
+        {
+            // >>> Finish action successfully: start fresh 5s window now
+            sTTManager.UI_EndActionSuccess(
+                "Action applied and layout updated. Please start your next command..."
+            );
+        }
+        else
+        {
+            // For undo we also consider it success
+            sTTManager.UI_EndActionSuccess(
+                "Undo complete. Please start your next command..."
+            );
+        }
     }
+
 
     public void OnUserRetries()
     {
-       // queryInputHandler.OnSubmit();
-        feedbackText.text = "Sending clarified command...";
+        //We're going to re-send the buffered command; show "working..."
+        sTTManager.UI_BeginAction("Sending clarified command…");
         queryInputHandler.OnSubmit(sTTManager.pendingCommand.command);
-        Debug.Log("Button resend command pressed!");
-        //retryButton.gameObject.SetActive(false);
-        //submitCommandButton.gameObject.SetActive(true);
+       // Debug.Log("Button resend command pressed!");
     }
 
     public void SetUserContext(float[] userPos, float[] userForward, float[] userRight)
@@ -790,7 +811,8 @@ public class LLMResponseHandler : MonoBehaviour
     {
         if (previousTargets == null || previousTargets.Count == 0)
         {
-            sTTManager.GiveFeedback("No previous targets to undo. Ready for your command! Please start your command with \"Hey Novy...\"", sTTManager.HexToColor("#633335"));
+            //sTTManager.GiveFeedback("No previous targets to undo. Ready for your command! Please start your command with \"Hey Novy...\"", sTTManager.HexToColor("#633335"));
+            sTTManager.UI_EndActionFailure("No cached state found for previous targets. Please start your next command...");
             return;
         }
 
@@ -854,16 +876,17 @@ public class LLMResponseHandler : MonoBehaviour
 
         previousTargets.Clear();
 
+
         if (undoneObjectNames.Count > 0)
         {
             string names = string.Join(", ", undoneObjectNames);
             string message = $"Undid changes to: {names}. Please start your next command with \"Hey Novy...\".";
-            sTTManager.GiveFeedback(message, sTTManager.HexToColor("#485E30"));
+            sTTManager.UI_EndActionSuccess(message);
             exporter.SaveRoomLayout();
         }
         else
         {
-            sTTManager.GiveFeedback("No cached state found for previous targets.Please start your next command with \"Hey Novy...\"", sTTManager.HexToColor("#633335"));
+            sTTManager.UI_EndActionFailure("No cached state found for previous targets. Please start your next command with \"Hey Novy...\"");
         }
     }
 
