@@ -32,16 +32,11 @@ namespace Whisper.Samples
         public QueryInputHandler queryHandler;
         public LLMResponseHandler responseHandler;
 
-        // --- Azure: add these ---
+ 
         [Header("Whisper Speech")]
         [Tooltip("Our resource key")]
-        // public string azureKey;
-        // public string azureEndpoint;
-        // public string azureLanguage = "en-US";
         private WhisperSpeechManager whisperManager;
         public string openAiApiKey;
-
-        // ------------------------
 
         public QueryInputHandler queryInputHandler;
 
@@ -49,6 +44,8 @@ namespace Whisper.Samples
         public GameObject voiceCommandFeedbackWindow;
         public TextMeshProUGUI recordInstructionText;
         public Image backgroundPanel;
+
+        public bool isCommandWindowActive = false;
 
         public AudioClip startBeep;
         public AudioClip stopBeep;
@@ -71,15 +68,19 @@ namespace Whisper.Samples
         private float volumeCheckInterval = 0.03f;
 
         private Color listeningColor;
+        private Color sleepColor;
         private Color processingColor;
         private Color readyColor;
         private Color errorColor;
+        private Color awakeColor;
 
         private Vector3 velocity;
         public float smoothTime = 0.3f;
         public float maxSpeed = Mathf.Infinity;
 
         [SerializeField] private PointingEventLogger pointingLogger;
+
+        private VoiceState _lastState;
 
         // ======== NAudio: rolling capture ========
         private NAudioMic naudioMic;
@@ -266,6 +267,8 @@ namespace Whisper.Samples
             processingColor = HexToColor("#7A803E");
             readyColor = HexToColor("#324863");
             errorColor = HexToColor("#633335");
+            sleepColor = HexToColor("#B0B0B0");
+            awakeColor = HexToColor("#FFD700");
 
             foreach (var device in Microphone.devices)
             {
@@ -495,69 +498,142 @@ namespace Whisper.Samples
                 yield break;
             }
 
-            //var task = azureManager.GetTextAsync(clip);
-            var task = whisperManager.GetTextAsync(clip);
-            yield return new WaitUntil(() => task.IsCompleted);
 
-            var res = task.Result;
-
-            if (res != null)
+            if (!isCommandWindowActive)
             {
+                var task = whisperManager.GetWakeWordTextAsync(clip);
+                yield return new WaitUntil(() => task.IsCompleted);
+
+                var res = task.Result;
+
                 string userQuery = res.Text?.Trim();
                 string loweredQuery = userQuery?.ToLowerInvariant();
                 Debug.Log(loweredQuery);
-                if (!string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery))
+
+                bool wakeWordDetected = CheckWakeWord(loweredQuery);
+
+                if (wakeWordDetected)
                 {
-                    // 1) Collect pointing metadata
-                    onNewBufferCommand(res, userQuery);
+                    OnWakeWordDetected(); // ✅ replaces manual feedback + sets 5s window
+                    isProcessing = false;
+                    yield break; // optional; you can return to loop and start recording next utterance
+                }
 
-                    if (pendingCommand != null)
+                else
+                {
+                    Debug.Log("No wake word detected...");
+                    GiveFeedback("No wake word detected...", errorColor);
+                }
+
+                isProcessing = false;
+                yield return new WaitForSeconds(3f);
+            }
+
+            else 
+            {
+                var task = whisperManager.GetTextAsync(clip);
+                yield return new WaitUntil(() => task.IsCompleted);
+
+                var res = task.Result;
+
+                if (res != null)
+                {
+                    string userQuery = res.Text?.Trim();
+                    string loweredQuery = userQuery?.ToLowerInvariant();
+                    Debug.Log(loweredQuery);
+
+                    bool valid = !string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery);
+
+                    if (!string.IsNullOrWhiteSpace(userQuery) && !IsInvalidTranscription(userQuery))
                     {
-                        string cleaned = userQuery.Trim();
+                        // 1) Collect pointing metadata
+                        onNewBufferCommand(res, userQuery);
 
-                        if (string.IsNullOrWhiteSpace(cleaned))
+                        if (pendingCommand != null)
                         {
-                            GiveFeedback("Please say your command clearly.", readyColor, startBeep);
+                            string cleaned = userQuery.Trim();
+
+                            if (string.IsNullOrWhiteSpace(cleaned))
+                            {
+                                GiveFeedback("Please say your command clearly.", readyColor, startBeep);
+                                pendingCommand = null;
+                                isProcessing = false;
+                                yield break;
+                            }
+
+                            if (queryHandler != null)
+                            {
+                                queryHandler.pointedTargetObject = pendingCommand.pointedObject;
+                                queryHandler.pointedTargetPos = pendingCommand.pointedPosition;
+                                queryHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
+                            }
+                            if (responseHandler != null)
+                            {
+                                responseHandler.pointedTargetObject = pendingCommand.pointedObject;
+                                responseHandler.pointedTargetPos = pendingCommand.pointedPosition;
+                                responseHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
+                            }
+
+                            queryInputHandler.OnSubmit(cleaned);
+                            GiveFeedback($"Command sent and processing:\n\"{cleaned}\"", readyColor, successBeep);
+                            Debug.Log($"Sent with pointing data: {cleaned}");
                             pendingCommand = null;
-                            isProcessing = false;
-                            yield break;
+                            OnCommandHeard(valid, userQuery); //green if valid, red if invalid; resets to 3s
                         }
-
-                        if (queryHandler != null)
-                        {
-                            queryHandler.pointedTargetObject = pendingCommand.pointedObject;
-                            queryHandler.pointedTargetPos = pendingCommand.pointedPosition;
-                            queryHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
-                        }
-                        if (responseHandler != null)
-                        {
-                            responseHandler.pointedTargetObject = pendingCommand.pointedObject;
-                            responseHandler.pointedTargetPos = pendingCommand.pointedPosition;
-                            responseHandler.pointedSurfaceObject = pendingCommand.pointedSurfaceObject;
-                        }
-
-                        queryInputHandler.OnSubmit(cleaned);
-                        GiveFeedback($"Command sent and processing:\n\"{cleaned}\"", readyColor, successBeep);
-                        Debug.Log($"Sent with pointing data: {cleaned}");
-                        pendingCommand = null;
                     }
+                    else
+                    {
+                        Debug.Log("Ignored transcription (invalid/empty).");
+                    }
+
                 }
                 else
                 {
-                    Debug.Log("Ignored transcription (invalid/empty).");
+                    Debug.LogWarning("Transcription failed.");
                 }
 
+                isProcessing = false;
+                yield return new WaitForSeconds(3f);
             }
-            else
-            {
-                Debug.LogWarning("Transcription failed.");
-            }
-
-            isProcessing = false;
-            yield return new WaitForSeconds(3f);
+            
         }
 
-        // use if need wake word to give commands
+        private bool CheckWakeWord(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return false;
+
+            // Normalize text for consistent comparison
+            //string normalized = text.ToLowerInvariant();
+
+            // Wake word variations
+            string[] wakeWords =
+            {
+        "hey novy",
+        "hi novy",
+        "hey novi",
+        "hi novi",
+        "ok novy",
+        "okay novy",
+        "ok novi",
+        "okay novi",
+        "hey", "hi",
+        "novi", "novy",
+        "nobi", "noby",
+        "movie", "movy",
+        "navy", "nevi", "nevy",
+        "mobi", "moby", "finally"
+    };
+
+            foreach (var phrase in wakeWords)
+            {
+                if (text.Contains(phrase))
+                    return true;
+            }
+
+            return false;
+        }
+
         private static string CleanWakeWords(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return text;
@@ -717,5 +793,176 @@ namespace Whisper.Samples
             else
                 return Color.magenta;
         }
+
+        // ----- Command Window state -----
+        private Coroutine _commandWindowRoutine;
+        private float _commandWindowRemaining = 0f;
+
+        // Call this right after detecting a wake word
+        public void OnWakeWordDetected()
+        {
+            UpdateVoiceState(VoiceState.WakeRecognized); // yellow + awake beep (startBeep)
+            OpenCommandWindow(5f);                        // 5s initial window
+        }
+
+        // Call this right after you get a command transcription
+        // valid: true = green, false = red
+        public void OnCommandHeard(bool valid, string commandText)
+        {
+            UpdateVoiceState(valid ? VoiceState.CommandValid : VoiceState.CommandInvalid, commandText);
+            ExtendCommandWindow(3f); // reset to 3s from now
+        }
+
+        // Manually close (e.g., on cancel)
+        public void ForceCloseCommandWindow()
+        {
+            CloseCommandWindow();
+        }
+
+        // Open command window for N seconds (wake phase)
+        public void OpenCommandWindow(float seconds = 5f)
+        {
+            if (_commandWindowRoutine != null)
+                StopCoroutine(_commandWindowRoutine);
+
+            isCommandWindowActive = true;
+            _commandWindowRemaining = seconds;
+
+            // Immediately show "Listening..." (soft yellow) after wake chime text
+            UpdateVoiceState(VoiceState.Listening);
+
+            _commandWindowRoutine = StartCoroutine(CommandWindowTimer());
+        }
+
+        // When a command is heard, reset the countdown to N seconds
+        public void ExtendCommandWindow(float seconds = 3f)
+        {
+            if (!isCommandWindowActive)
+            {
+                // If somehow inactive, just open it fresh
+                OpenCommandWindow(seconds);
+                return;
+            }
+
+            _commandWindowRemaining = seconds;
+
+            // After showing valid/invalid, go back to Listening until timeout or next command
+            // (Give a tiny delay so the user sees the green/red feedback)
+            StartCoroutine(_ReturnToListeningSoon(0.6f));
+        }
+
+        private IEnumerator _ReturnToListeningSoon(float delay)
+        {
+            yield return new WaitForSeconds(delay);
+            if (isCommandWindowActive)
+                UpdateVoiceState(VoiceState.Listening); //Listening...
+        }
+
+        // Core countdown loop. Updates UI text; closes when time elapses.
+        private IEnumerator CommandWindowTimer()
+        {
+            // Update text every 0.25s to avoid spam
+            const float tick = 0.25f;
+
+            while (_commandWindowRemaining > 0f && isCommandWindowActive)
+            {
+                // Only show countdown in Listening state to avoid overriding green/red messages
+                // If you want countdown visible during CommandValid/Invalid too, remove this check.
+                string currentMsg = "Listening for your command…";
+                if (_lastState == VoiceState.Listening) // see _lastState tracking below
+                {
+                    GiveFeedback($"{currentMsg} ({Mathf.CeilToInt(_commandWindowRemaining)}s)", new Color(0.9f, 0.9f, 0.1f));
+                }
+
+                yield return new WaitForSeconds(tick);
+                _commandWindowRemaining -= tick;
+            }
+
+            // Time’s up → close
+            CloseCommandWindow();
+        }
+
+        // Close and go to Sleeping
+        private void CloseCommandWindow()
+        {
+            if (_commandWindowRoutine != null)
+            {
+                StopCoroutine(_commandWindowRoutine);
+                _commandWindowRoutine = null;
+            }
+
+            isCommandWindowActive = false;
+            _commandWindowRemaining = 0f;
+
+            UpdateVoiceState(VoiceState.Sleeping); // "Sleeping… need wake word again" + stopBeep
+        }
+
+
+        public enum VoiceState
+    {
+        Idle,           // Waiting for wake word
+        WakeRecognized, // Wake word detected
+        Listening,      // Listening for command
+        CommandValid,   // Command accepted
+        CommandInvalid, // Command not recognized
+        Sleeping        // Returned to idle
+    }
+
+        public void UpdateVoiceState(VoiceState state, string commandText = null)
+        {
+            _lastState = state;
+
+            switch (state)
+            {
+                case VoiceState.Idle:
+                    GiveFeedback(
+                        "Say \"Hey Novy\" to wake me up.",
+                        sleepColor
+                    );
+                    break;
+
+                case VoiceState.WakeRecognized:
+                    GiveFeedback(
+                        "Wake word recognized: Hello, waiting for your command…",
+                        awakeColor,
+                        startBeep // optional AudioClip
+                    );
+                    break;
+
+                case VoiceState.Listening:
+                    GiveFeedback(
+                        "Listening for your command…",
+                        new Color(0.9f, 0.9f, 0.1f) // soft yellow tone
+                    );
+                    break;
+
+                case VoiceState.CommandValid:
+                    GiveFeedback(
+                        $"Command executed: {commandText}. Waiting for your next command",
+                        readyColor,
+                        successBeep // optional AudioClip
+                    );
+                    break;
+
+                case VoiceState.CommandInvalid:
+                    GiveFeedback(
+                        "Invalid command. Try again.",
+                        errorColor,
+                        stopBeep // optional AudioClip
+                    );
+                    break;
+
+                case VoiceState.Sleeping:
+                    GiveFeedback(
+                        "Sleeping… Say \"Hey Novy\" to wake me again.",
+                        sleepColor,
+                        stopBeep // optional AudioClip
+                    );
+                    break;
+            }
+    }
     }
 }
+
+
+

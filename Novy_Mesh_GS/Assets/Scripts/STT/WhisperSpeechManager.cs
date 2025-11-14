@@ -46,6 +46,54 @@ public sealed class WhisperSpeechManager
         public WhisperWord[] Words { get; set; }
     }
 
+
+    /// <summary>
+    /// Saves the AudioClip to a 16-bit mono PCM WAV and calls gpt4o-transcribe with text result + prompt to hear for wake words.
+    /// </summary>
+
+    public async Task<WhisperResult> GetWakeWordTextAsync(AudioClip clip)
+    {
+        if (clip == null || clip.samples == 0)
+            return new WhisperResult { Text = null, Words = Array.Empty<WhisperWord>() };
+
+        string tempDir = string.IsNullOrEmpty(Application.temporaryCachePath)
+            ? Application.persistentDataPath
+            : Application.temporaryCachePath;
+
+        Directory.CreateDirectory(tempDir);
+        string wavPath = Path.Combine(tempDir, $"gpt4o_{Guid.NewGuid():N}.wav");
+        WriteWav16kMono(clip, wavPath);
+
+        try
+        {
+            using var form = new MultipartFormDataContent();
+            form.Add(new StringContent("gpt-4o-transcribe"), "model");
+            form.Add(new StringContent("text"), "response_format");
+            form.Add(new StringContent("Listen carefully for wake words like 'hey novy', 'hi novi', 'okay novi', or just 'hey' and variations thereof. Return exactly what was spoken."), "prompt");
+            form.Add(new StreamContent(File.OpenRead(wavPath)), "file", Path.GetFileName(wavPath));
+
+            using var resp = await _http.PostAsync("https://api.openai.com/v1/audio/transcriptions", form);
+            string resultText = await resp.Content.ReadAsStringAsync();
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                Debug.LogError($"GPT-4o Transcribe API error: {resp.StatusCode} — {resultText}");
+                return new WhisperResult { Text = null, Words = Array.Empty<WhisperWord>() };
+            }
+
+            // For response_format="text", API returns plain text, not JSON
+            return new WhisperResult
+            {
+                Text = resultText.Trim(),
+                Words = Array.Empty<WhisperWord>()
+            };
+        }
+        finally
+        {
+            try { File.Delete(wavPath); } catch { /* ignore */ }
+        }
+    }
+
     /// <summary>
     /// Saves the AudioClip to a 16-bit mono PCM WAV and calls whisper-1 with verbose_json + word timestamps.
     /// </summary>
